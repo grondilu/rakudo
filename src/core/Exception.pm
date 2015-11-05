@@ -1687,6 +1687,12 @@ my class X::Cannot::Empty is Exception {
         "Cannot $.action from an empty $.what";
     }
 }
+my class X::Cannot::New is Exception {
+    has $.class;
+    method message() {
+        "Cannot make a {$.class.^name} object using .new";
+    }
+}
 
 my class X::Backslash::UnrecognizedSequence does X::Syntax {
     has $.sequence;
@@ -1700,7 +1706,7 @@ my class X::Backslash::NonVariableDollar does X::Syntax {
 my class X::ControlFlow is Exception {
     has $.illegal;   # something like 'next'
     has $.enclosing; # ....  outside a loop
-    has $.backtrace; # where the bougs control flow op was
+    has $.backtrace; # where the bogus control flow op was
 
     method backtrace() {
         $!backtrace || nextsame();

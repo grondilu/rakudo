@@ -3192,8 +3192,6 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
         || <args(1)>
             {
                 if !$<args><invocant> {
-                    self.add_mystery($<longname>, $<args>.from, 'termish')
-                                unless nqp::index($<longname>.Str, '::') >= 0;
                     my $name := ~$<longname>;
                     if nqp::ishash($*BORG) && $*BORG<block> {
                         unless $*BORG<name> {
@@ -4666,6 +4664,7 @@ grammar Perl6::QGrammar is HLL::Grammar does STD {
         token backslash:sym<n> { <sym> }
         token backslash:sym<o> { :dba('octal character') <sym> [ <octint> | '[' ~ ']' <octints> | '{' <.obsbrace> ] }
         token backslash:sym<r> { <sym> }
+        token backslash:sym<rn> { 'r\n' }
         token backslash:sym<t> { <sym> }
         token backslash:sym<x> { :dba('hex character') <sym> [ <hexint> | '[' ~ ']' <hexints> | '{' <.obsbrace> ] }
         token backslash:sym<0> { <sym> }
@@ -5056,9 +5055,7 @@ grammar Perl6::RegexGrammar is QRegex::P6Regex::Grammar does STD does CursorPack
         <.SIGOK>
     }
 
-    token metachar:sym<'> { <?[']> <quote=.LANG('MAIN','quote')> <.SIGOK> }
-
-    token metachar:sym<"> { <?["]> <quote=.LANG('MAIN','quote')> <.SIGOK> }
+    token metachar:sym<'> { <?[ ' " ‘ ‚ ’ “ „ ” ｢ ]> <quote=.LANG('MAIN','quote')> <.SIGOK> }
 
     token metachar:sym<{}> { \\<[xo]>'{' <.obsbrace> }
 

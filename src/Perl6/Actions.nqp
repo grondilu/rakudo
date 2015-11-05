@@ -5024,6 +5024,7 @@ Compilation unit '$file' contained the following violations:
                 $past := capture_or_raw($/,$<args>.ast, ~$<longname>);
                 if +@name == 1 {
                     $past.name(@name[0]);
+                    $/.CURSOR.add_mystery(@name[0], $<args>.from, 'termish');
                     if +$past.list == 1 && %commatrap{@name[0]} {
                         my $prelen := $<longname>.from;
                         $prelen := 100 if $prelen > 100;
@@ -8440,9 +8441,10 @@ class Perl6::QActions is HLL::Actions does STDActions {
     method backslash:sym<c>($/) { make $<charspec>.ast }
     method backslash:sym<e>($/) { make "\c[27]" }
     method backslash:sym<f>($/) { make "\c[12]" }
-    method backslash:sym<n>($/) { make "\n" }
+    method backslash:sym<n>($/) { make nqp::unbox_s($*W.find_symbol(['$?NL'])); }
     method backslash:sym<o>($/) { make self.ints_to_string( $<octint> ?? $<octint> !! $<octints><octint> ) }
     method backslash:sym<r>($/) { make "\r" }
+    method backslash:sym<rn>($/) { make "\r\n" }
     method backslash:sym<t>($/) { make "\t" }
     method backslash:sym<x>($/) { make self.ints_to_string( $<hexint> ?? $<hexint> !! $<hexints><hexint> ) }
     method backslash:sym<0>($/) { make "\c[0]" }
@@ -8505,7 +8507,7 @@ class Perl6::RegexActions is QRegex::P6Regex::Actions does STDActions {
     }
 
     method metachar:sym<'>($/) { self.rxquote($/) }
-    method metachar:sym<">($/) { self.rxquote($/) }
+
     method rxquote($/) {
         my $quote := $<quote>.ast;
         if $quote.has_compile_time_value {
@@ -8541,11 +8543,22 @@ class Perl6::RegexActions is QRegex::P6Regex::Actions does STDActions {
             );
         }
         else {
-            my $min := $<min>.ast;
+            my $min := 0;
+            if $<min> { $min := $<min>.ast; }
+
             my $max := -1;
-            if ! $<max> { $max := $min }
+            my $upto := $<upto>;
+
+            if $<from> eq '^' { $min++ }
+
+            if ! $<max> {
+                $max := $min
+            }
             elsif $<max> ne '*' {
                 $max := $<max>.ast;
+                if $<upto> eq '^' {
+                    $max--;
+                }
                 $/.CURSOR.panic("Empty range") if $min > $max;
             }
             $qast := QAST::Regex.new( :rxtype<quant>, :min($min), :max($max), :node($/) );

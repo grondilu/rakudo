@@ -195,7 +195,7 @@ my class Str does Stringy { # declared in BOOTSTRAP
 
     my %esc = (
         '$' => '\$',  '@' => '\@',  '%' => '\%',  '&' => '\&',  '{' => '\{',
-        "\b" => '\b', "\n" => '\n', "\r" => '\r', "\t" => '\t', '"' => '\"',
+        "\b" => '\b', "\x0A" => '\n', "\r" => '\r', "\t" => '\t', '"' => '\"',
         '\\' => '\\\\' );
 
     multi method gist(Str:D:) { self }
@@ -211,7 +211,8 @@ my class Str does Stringy { # declared in BOOTSTRAP
 
         # Under NFG-supporting implementations, must be sure that any leading
         # combiners are escaped, otherwise they will be combined onto the "
-        # under concatenation closure, which ruins round-tripping.
+        # under concatenation closure, which ruins round-tripping. Also handle
+        # the \r\n grapheme correctly.
         my $result = '"';
         my $to-encode = self;
 
@@ -221,6 +222,10 @@ my class Str does Stringy { # declared in BOOTSTRAP
 #?if moar
             if $ord >= 256 && +uniprop($ord, 'Canonical_Combining_Class') {
                 $result ~= char-to-escapes($ch);
+                next;
+            }
+            elsif $ch eq "\r\n" {
+                $result ~= '\r\n';
                 next;
             }
 #?endif
@@ -255,6 +260,45 @@ my class Str does Stringy { # declared in BOOTSTRAP
             }
             method count-only() { nqp::p6box_i($!pos = $!chars) }
         }.new(self));
+    }
+    multi method comb(Str:D: Int:D $size, $limit = *) {
+        my int $inf = nqp::istype($limit,Whatever) || $limit == Inf;
+        return self.comb if $size <= 1 && $inf;
+
+        Seq.new(class :: does Iterator {
+            has str $!str;
+            has int $!chars;
+            has int $!size;
+            has int $!pos;
+            has int $!max;
+            has int $!todo;
+            submethod BUILD(\string,\size,\limit,\inf) {
+                $!str   = nqp::unbox_s(string);
+                $!chars = nqp::chars($!str);
+                $!size  = 1 max size;
+                $!pos   = -size;
+                $!max   = 1 + floor( ( $!chars - 1 ) / $!size );
+                $!todo  = (inf ?? $!max !! (0 max limit)) + 1;
+                self
+            }
+            method new(\s,\z,\l,\i) { nqp::create(self).BUILD(s,z,l,i) }
+            method pull-one() {
+                ($!todo = $!todo - 1) && ($!pos = $!pos + $!size) < $!chars
+                  ?? nqp::p6box_s(nqp::substr($!str, $!pos, $!size))
+                  !! IterationEnd
+            }
+            method push-all($target) {
+                my int $todo  = $!todo;
+                my int $pos   = $!pos;
+                my int $size  = $!size;
+                my int $chars = $!chars;
+                $target.push(nqp::p6box_s(nqp::substr($!str, $pos, $size)))
+                  while ($todo = $todo - 1 ) && ($pos = $pos + $size) < $chars;
+                $!pos = $!chars;
+                IterationEnd
+            }
+            method count-only() { $!pos = $!chars; $!max }
+        }.new(self,$size,$limit,$inf))
     }
     multi method comb(Str:D: Str $pat) {
         Seq.new(class :: does Iterator {
@@ -609,6 +653,10 @@ my class Str does Stringy { # declared in BOOTSTRAP
         }
     }
 
+#?if moar
+    method ords(Str:D:) { self.NFC.list }
+#?endif
+#?if !moar
     method ords(Str:D:) {
         Seq.new(class :: does ProcessStr {
             has int $!pos;
@@ -619,6 +667,7 @@ my class Str does Stringy { # declared in BOOTSTRAP
             }
         }.new(self));
     }
+#?endif
 
     # constant ???
     my str $CRLF = "\r\n";
@@ -967,6 +1016,96 @@ my class Str does Stringy { # declared in BOOTSTRAP
                 method sink-all() { IterationEnd }
             }.new(self,$limit));
         }
+    }
+    multi method split(Str:D: @needles;; :$all, :$keep-indices, :$skip-empty) {
+        return self.split(rx/ @needles /,:$all)
+          if Rakudo::Internals.NOT_ALL_DEFINED_TYPE(@needles,Cool);
+
+        my str $str       = nqp::unbox_s(self);
+        my $positions    := nqp::list;
+        my $needles      := nqp::list;
+        my $needle-chars := nqp::list;
+        my $sorted       := nqp::list;
+        my int $found     = -1;
+        my int $fired;
+        for @needles.kv -> $index, $needle {
+            my str $need  = nqp::unbox_s($needle.Str);
+            my int $chars = nqp::chars($need);
+            nqp::push($needles,$need);
+            nqp::push($needle-chars,$chars);
+
+            my int $pos;
+            my int $i;
+            my int $seen = nqp::elems($positions);
+            while nqp::isge_i($i = nqp::index($str, $need, $pos),0) {
+                nqp::push($positions,Pair.new($i,nqp::unbox_i($index)));
+                nqp::push($sorted,nqp::unbox_i($found = $found + 1));
+                $pos = $i + $chars;
+            }
+            $fired = $fired + 1 if nqp::elems($positions) > $seen;
+        }
+
+        nqp::p6sort($sorted, -> int $a, int $b {
+            # $a <=> $b || $b.chars <=> $a.chars, aka pos asc, length desc
+            nqp::getattr(nqp::atpos($positions,$a),Pair,'$!key')
+              <=> nqp::getattr(nqp::atpos($positions,$b),Pair,'$!key')
+                || nqp::atpos($needle-chars,
+                     nqp::getattr(nqp::atpos($positions,$b),Pair,'$!value'))
+                       <=> nqp::atpos($needle-chars,
+                         nqp::getattr(nqp::atpos($positions,$a),Pair,'$!value'))
+        }) if $fired > 1;
+
+        my int $skip = $skip-empty;
+        my $pair;
+        my int $from;
+        my int $pos;
+        my $result := nqp::list;
+        if $keep-indices {
+            while nqp::elems($sorted) {
+                $pair := nqp::atpos($positions,nqp::shift($sorted));
+                $from  = nqp::getattr($pair,Pair,'$!key');
+                if nqp::isge_i($from,$pos) { # not hidden by other needle
+                    my int $needle-index = nqp::getattr($pair,Pair,'$!value');
+                    nqp::push($result,nqp::substr($str,$pos,$from - $pos))
+                      unless $skip && nqp::iseq_i($from,$pos);
+                    nqp::push($result,$needle-index);
+                    $pos = $from + nqp::atpos($needle-chars,$needle-index);
+                }
+            }
+        }
+        elsif $all {
+            while nqp::elems($sorted) {
+                $pair := nqp::atpos($positions,nqp::shift($sorted));
+                $from  = nqp::getattr($pair,Pair,'$!key');
+                if nqp::isge_i($from,$pos) { # not hidden by other needle
+                    my int $needle-index = nqp::getattr($pair,Pair,'$!value');
+                    nqp::push($result,nqp::substr($str,$pos,$from - $pos))
+                      unless $skip && nqp::iseq_i($from,$pos);
+                    nqp::push($result,nqp::atpos($needles,$needle-index));
+                    $pos = $from + nqp::atpos($needle-chars,$needle-index);
+                }
+            }
+        }
+        else {
+            while nqp::elems($sorted) {
+                $pair := nqp::atpos($positions,nqp::shift($sorted));
+                $from  = nqp::getattr($pair,Pair,'$!key');
+                if nqp::isge_i($from,$pos) { # not hidden by other needle
+                    nqp::push($result,nqp::substr($str,$pos,$from - $pos))
+                      unless $skip && nqp::iseq_i($from,$pos);
+                    $pos = $from + nqp::atpos(
+                      $needle-chars,nqp::getattr($pair,Pair,'$!value'));
+                }
+            }
+        }
+        nqp::push($result,nqp::substr($str,$pos));
+
+        $result
+    }
+    multi method split(Str:D: @needles,$parts;; :$all, :$keep-indices) {
+        nqp::istype($parts,Whatever) || $parts === Inf
+          ?? self.split(@needles,:$all,:$keep-indices)
+          !! self.split(/ @needles /,$parts,:$all,:$keep-indices)
     }
 
     method samecase(Str:D: Str $pattern) {
@@ -1610,11 +1749,7 @@ my class Str does Stringy { # declared in BOOTSTRAP
           ?? nqp::p6box_i(nqp::ord($!value))
           !! Int;
     }
-    multi method ord(Str:U:) {
-        self.Str;
-        Int
-    }
-
+    multi method ord(Str:U:) returns Int { Int }
 }
 
 
