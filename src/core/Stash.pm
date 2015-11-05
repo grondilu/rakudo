@@ -32,6 +32,12 @@ my class Stash { # declared in BOOTSTRAP
             nqp::bindkey($storage, $key, $pkg)
         }
     }
+
+    method merge-symbols(Stash:D: Stash $globalish) {
+        if $globalish !=== Stash {
+            nqp::gethllsym('perl6', 'ModuleLoader').merge_globals(self, $globalish);
+        }
+    }
 }
 
 # vim: ft=perl6 expandtab sw=4
