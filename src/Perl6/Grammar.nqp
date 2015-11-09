@@ -383,11 +383,6 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
         %*LANG<MAIN>            := Perl6::Grammar;
         %*LANG<MAIN-actions>    := Perl6::Actions;
 
-        # For tracking how many blocks deep we are nested.
-        # moreinput needs this to know if it has finished asking
-        # for more input.
-        my $*MOREINPUT_BLOCK_DEPTH := 0;
-
         # Package declarator to meta-package mapping. Starts pretty much empty;
         # we get the mappings either imported or supplied by the setting. One
         # issue is that we may have no setting to provide them, e.g. when we
@@ -481,9 +476,8 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
                     my $opname := $cf<circumfix>
                         ?? $*W.colonpair_nibble_to_str($/, $cf<circumfix><nibble>)
                         !! '';
-                    my $cname := $*W.canonicalize_opname($opname);
-                    my $canname  := $category ~ ":sym" ~ $cname;
-                    my $termname := $category ~ ":" ~ $cname;
+                    my $canname  := $category ~ $*W.canonicalize_pair('sym', $opname);
+                    my $termname := $category ~ $*W.canonicalize_pair('', $opname);
                     $/.CURSOR.add_categorical($category, $opname, $canname, $termname, :defterm);
                 }
             }
@@ -544,7 +538,6 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
         | [\r\n || \v] <.heredoc>
         | <.unv>
         | <.unsp>
-        | $ <?MOREINPUT>
         ]*
         <?MARKER('ws')>
         :my $stub := self.'!fresh_highexpect'();
@@ -558,21 +551,6 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
         | <.unv>
         | <.unsp>
         ]*
-    }
-
-    token MOREINPUT {
-        [
-            <!MARKED('nomoreinput')>
-            <?{ $*MOREINPUT_BLOCK_DEPTH == 0 }>
-            { self.moreinput }
-            <?MARKER('nomoreinput')>
-        ||  <!>
-        ]
-    }
-
-    method moreinput() {
-        $*moreinput(self) if $*moreinput;
-        0
     }
 
     token vws {
@@ -1143,13 +1121,11 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
         :my $*STRICT := nqp::getlexdyn('$*STRICT');
         :dba('statement list')
         ''
-        { $*MOREINPUT_BLOCK_DEPTH := $*MOREINPUT_BLOCK_DEPTH + 1 }
         [
         | $
         | <?before <[\)\]\}]>>
         | [ <statement> <.eat_terminator> ]*
         ]
-        { $*MOREINPUT_BLOCK_DEPTH := $*MOREINPUT_BLOCK_DEPTH - 1 }
     }
 
     method shallow_copy(%hash) {
@@ -1230,15 +1206,13 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
     }
 
     token eat_terminator {
-        [
-        || ';' <?MARKER('nomoreinput')>
+        || ';'
         || <?MARKED('endstmt')> <.ws>
         || <?before ')' | ']' | '}' >
-        || $ <?MARKER('nomoreinput')>
+        || $
         || <?stopper>
         || <?before [if|while|for|loop|repeat|given|when] » > { self.typed_panic( 'X::Syntax::Confused', reason => "Missing semicolon" ) }
         || { $/.CURSOR.typed_panic( 'X::Syntax::Confused', reason => "Confused" ) }
-        ]
     }
 
     token xblock($*IMPLICIT = 0) {
@@ -2416,7 +2390,7 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
         ]
         || <.ws>[<typename><.ws>]* <ident> <?before <.ws> [':'?':'?'=' | <.terminator> | $ ]> {}
             <.malformed("$*SCOPE (did you mean to declare a sigilless \\{~$<ident>} or \${~$<ident>}?)")>
-        || <.ws><typo_typename> <!>
+        || <.ws><!typename> <typo_typename> <!>
         || <.malformed($*SCOPE)>
         ]
     }
@@ -2426,7 +2400,7 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
         :my $sigil;
         <variable>
         {
-            $*VARIABLE := $<variable>.Str;
+            $*VARIABLE := $<variable>.ast.name;
             $/.CURSOR.add_variable($*VARIABLE);
             $sigil := nqp::substr($*VARIABLE, 0, 1);
             $*IN_DECL := '';
@@ -2516,7 +2490,7 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
                 my $opname := $cf<circumfix>
                     ?? $*W.colonpair_nibble_to_str($/, $cf<circumfix><nibble> // $cf<circumfix><semilist>)
                     !! '';
-                my $canname := $category ~ ":sym" ~ $*W.canonicalize_opname($opname);
+                my $canname := $category ~ $*W.canonicalize_pair('sym', $opname);
                 $/.CURSOR.add_categorical($category, $opname, $canname, $<deflongname>.ast, $*DECLARAND);
             }
         }
@@ -2641,7 +2615,7 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
                 my $opname := $cf<circumfix>
                     ?? $*W.colonpair_nibble_to_str($/, $cf<circumfix><nibble>)
                     !! '';
-                my $canname := $category ~ ":sym" ~ $*W.canonicalize_opname($opname);
+                my $canname := $category ~ $*W.canonicalize_pair('sym', $opname);
                 $/.CURSOR.add_categorical($category, $opname, $canname, $<deflongname>.ast, $*DECLARAND);
             }
         }
@@ -4434,9 +4408,10 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
 
     method add_variable($name) {
         my $categorical := $name ~~ /^'&'((\w+) [ ':<'\s*(\S+?)\s*'>' | ':«'\s*(\S+?)\s*'»' ])$/;
-        if $categorical {
-            self.add_categorical(~$categorical[0][0], ~$categorical[0][1],
-                ~$categorical[0][0] ~ ':sym' ~ $*W.canonicalize_opname($categorical[0][1]),
+        my $cat := ~$categorical[0][0];
+        if $categorical && nqp::can(self,$cat) {
+            self.add_categorical($cat, ~$categorical[0][1],
+                $cat ~ $*W.canonicalize_pair('sym', $categorical[0][1]),
                 ~$categorical[0]);
         }
     }

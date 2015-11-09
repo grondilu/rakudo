@@ -1,7 +1,12 @@
 my class Failure {
     has $.exception;
     has $.backtrace;
+#?if moar
     has int $!handled;
+#?endif
+#?if jvm
+    has $!handled;
+#?endif
 
     multi method new() {
         my $stash := CALLER::;
@@ -50,7 +55,14 @@ my class Failure {
     }
     multi method Bool(Failure:D:) { $!handled = 1; Bool::False; }
 
+
+#?if moar
     method Int(Failure:D:)        { $!handled ?? Int !! self!throw(); }
+#?endif
+#?if jvm
+    method Int(Failure:D:)        { $!handled ?? 0   !! self!throw(); }
+#?endif
+
     method Num(Failure:D:)        { $!handled ?? NaN !! self!throw(); }
     method Numeric(Failure:D:)    { $!handled ?? NaN !! self!throw(); }
     multi method Str(Failure:D:)  { $!handled ?? $.mess !! self!throw(); }

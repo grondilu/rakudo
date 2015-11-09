@@ -50,25 +50,12 @@ my class Str does Stringy { # declared in BOOTSTRAP
     }
 
     method chomp(Str:D:) {
-        my str $sself = nqp::unbox_s(self);
-        my int $chars = nqp::chars($sself);
-        return '' if $chars == 0;
+        my str $str   = nqp::unbox_s(self);
+        my int $chars = nqp::chars($str);
 
-        my int $last = nqp::ordat($sself, $chars - 1);
-        if $last == 10 {
-            if $chars > 1 && nqp::iseq_i(nqp::ordat($sself, $chars - 2),  13) {
-                nqp::p6box_s(nqp::substr($sself, 0, $chars - 2));
-            }
-            else {
-                nqp::p6box_s(nqp::substr($sself, 0, $chars - 1));
-            }
-        }
-        elsif $last == 13 {
-            nqp::p6box_s(nqp::substr($sself, 0, $chars - 1));
-        }
-        else {
-            self;
-        }
+        $chars && nqp::iscclass(nqp::const::CCLASS_NEWLINE,$str,$chars-1)
+            ?? nqp::p6box_s(nqp::substr($str,0,$chars-1))
+            !! self
     }
 
     method chop(Str:D: Int() $chopping = 1) {
@@ -763,36 +750,163 @@ my class Str does Stringy { # declared in BOOTSTRAP
         }.new(self));
     }
 
-    multi method split(Str:D: Regex:D $pat, $limit = *;; :$all) {
-        return ().list
-          if nqp::istype($limit,Numeric) && $limit <= 0;
-        my \matches = nqp::istype($limit, Whatever)
+    method !split-sanity(\v,\k,\kv,\p,\all) {
+        if all {
+            # Deprecate ???
+            v = True;
+        }
+
+        # cannot combine these
+        my int $any = ?v + ?k + ?kv + ?p;
+        X::Adverb.new(
+          what   => 'split',
+          source => 'Str',
+          nogo   => (:v(v),:k(k),:kv(kv),:p(p)).grep(*.value).map(*.key),
+        ).throw if $any > 1;
+
+        $any
+    }
+
+    multi method split(Str:D: Regex:D $pat, $parts = *;;
+      :$v is copy, :$k, :$kv, :$p, :$skip-empty, :$all) {
+        my int $any = self!split-sanity($v,$k,$kv,$p,$all);
+
+        my $limit = nqp::istype($parts,Whatever) ?? Inf !! $parts;
+        return ().list if $limit <= 0;
+
+        my \matches = $limit == Inf
           ?? self.match($pat, :g)
           !! self.match($pat, :x(1..$limit-1), :g);
 
-        my $prev-pos = 0;
+        my str $str   = nqp::unbox_s(self);
+        my int $elems = +matches;  # make sure all reified
+        my $matches  := nqp::getattr(matches,List,'$!reified');
+        my $result   := nqp::list;
+        my int $i;
+        my int $pos;
+        my int $found;
 
-        if ($all) {
-            my $elems = +matches;
-            map {
-                my $value = substr(self,$prev-pos, .from - $prev-pos);
-                $prev-pos = .to;
-                # we don't want the dummy object
-                $elems-- ?? Slip.new($value, $_) !! $value;
-            }, flat matches, Match.new( :from(self.chars) );
-            #                ^-- add dummy for last
+        if $any || $skip-empty {
+            my int $notskip = !$skip-empty;
+            my int $next;
+            while nqp::islt_i($i,$elems) {
+                my $match := nqp::decont(nqp::atpos($matches,$i));
+                $found  = nqp::getattr($match,Match,'$!from');
+                $next   = nqp::getattr($match,Match,'$!to');
+                if $notskip {
+                    nqp::push($result,
+                      nqp::substr($str,$pos,nqp::sub_i($found,$pos)));
+                }
+                elsif nqp::sub_i($found,$pos) -> $chars {
+                    nqp::push($result,
+                      nqp::substr($str,$pos,$chars));
+                }
+                if $any {
+                    if $v {
+                        nqp::push($result,$match);
+                    }
+                    elsif $k {
+                        nqp::push($result,0);
+                    }
+                    elsif $kv {
+                        nqp::push($result,0);
+                        nqp::push($result,$match);
+                    }
+                    else {  # $p
+                        nqp::push($result, Pair.new(0,$match));
+                    }
+                }
+
+                $pos = $next;
+                $i   = nqp::add_i($i,1);
+            }
+            nqp::push($result,nqp::substr($str,$pos))
+              if $notskip || nqp::islt_i($pos,nqp::chars($str));
         }
         else {
-            map {
-                my $value = substr(self, $prev-pos, .from - $prev-pos);
-                $prev-pos = .to;
-                $value;
-            }, flat matches, Match.new( :from(self.chars) );
-            #                ^-- add dummy for last
+            my $match;
+            nqp::setelems($result,$elems + 1);
+            while nqp::islt_i($i,$elems) {
+                $match := nqp::decont(nqp::atpos($matches,$i));
+                $found  = nqp::getattr($match,Match,'$!from');
+                nqp::bindpos($result,$i,
+                  nqp::substr($str,$pos,nqp::sub_i($found,$pos)));
+                $pos = nqp::getattr($match,Match,'$!to');
+                $i   = nqp::add_i($i,1);
+            }
+            nqp::bindpos($result,$i,nqp::substr($str,$pos));
         }
+
+        $result
     }
 
-    multi method split(Str:D: Str(Cool) $match;; :$all) {
+    multi method split(Str:D: Str(Cool) $match;;
+      :$v is copy, :$k, :$kv, :$p, :$skip-empty, :$all) {
+        my int $any = self!split-sanity($v,$k,$kv,$p,$all);
+
+        # nothing to work with
+        my str $needle = nqp::unbox_s($match);
+        my int $chars  = nqp::chars($needle);
+        if !self.chars {
+            return $chars ?? self.list !! ();
+        }
+
+        # split really, really fast in NQP, also supports ""
+        my $matches := nqp::split($needle,nqp::unbox_s(self));
+
+        # interleave the necessary strings if needed
+        if $chars {
+            if $any {
+                my $match-list :=
+                     $v  ?? nqp::list($needle)
+                  !! $k  ?? nqp::list(0)
+                  !! $kv ?? nqp::list(0,$needle)
+                  !!        nqp::list(Pair.new(0,$needle)); # $p
+
+                if $match-list {
+                    my int $i = nqp::elems($matches);
+                    if $skip-empty {
+                        nqp::splice($matches,$match-list,$i,
+                          nqp::not_i(nqp::isne_i(
+                            nqp::chars(nqp::atpos($matches,$i)),0)))
+                              while $i = nqp::sub_i($i,1);
+                        nqp::splice($matches,nqp::list,0,1)
+                          unless nqp::chars(nqp::atpos($matches,0));
+                    }
+                    else {
+                        nqp::splice($matches,$match-list,$i,0)
+                          while $i = nqp::sub_i($i,1);
+                    }
+                }
+            }
+            elsif $skip-empty {
+                my int $i = nqp::elems($matches);
+                my $match-list := nqp::list;
+                while nqp::isge_i($i = nqp::sub_i($i,1),0) {
+                  nqp::splice($matches,$match-list,$i,1)
+                    if nqp::iseq_i(nqp::chars(nqp::atpos($matches,$i)),0);
+                }
+            }
+        }
+
+        # single chars need empty before/after, unless inhibited
+        elsif !$skip-empty {
+            nqp::unshift($matches,"");
+            nqp::push($matches,"");
+        }
+
+        # since most of data structures are built already, there is little
+        # point in making this a lazy iterator here
+        $matches
+    }
+
+    multi method split(Str:D: Str(Cool) $match, $parts;;
+      :$v is copy, :$k, :$kv, :$p, :$skip-empty, :$all) {
+        my int $any = self!split-sanity($v,$k,$kv,$p,$all);
+
+        # don't do it here
+        my $limit = nqp::istype($parts,Whatever) ?? Inf !! $parts;
+        return ().list if $limit <= 0;
 
         # nothing to work with
         my int $chars = $match.chars;
@@ -800,85 +914,41 @@ my class Str does Stringy { # declared in BOOTSTRAP
             return $chars ?? self.list !! ();
         }
 
-        Seq.new(class :: does Iterator {
-            has str $!match;
-            has Mu $!matches;
-            method BUILD(\string, \match, \all) {
-                $!match       = nqp::unbox_s(match);
-                my int $chars = nqp::chars($!match);
-                $!matches    := nqp::split($!match,nqp::unbox_s(string));
-
-                # interleave the match string if needed
-                if all && $chars {
-                    my $match-list := nqp::list($!match);
-                    my int $i = nqp::elems($!matches);
-                    nqp::splice($!matches,$match-list,$i,0)
-                      while $i = $i - 1;
-                }
-                unless $chars {
-                    nqp::unshift($!matches,"");
-                    nqp::push($!matches,"");
-                }
-                self
-            }
-            method new(\string,\match,\all) {
-                nqp::create(self).BUILD(string,match,all)
-            }
-            method pull-one() is raw {
-                nqp::elems($!matches)
-                  ?? nqp::p6box_s(nqp::shift($!matches))
-                  !! IterationEnd
-            }
-            method push-all($target) {
-                $target.push(nqp::p6box_s(nqp::shift($!matches)))
-                  while nqp::elems($!matches);
-                IterationEnd
-            }
-            method count-only() {
-                nqp::p6box_i(nqp::elems($!matches))
-            }
-            method sink-all() { IterationEnd }
-        }.new(self,$match,$all));
-    }
-
-    multi method split(Str:D: Str(Cool) $match, $parts;; :$all) {
-
-        # don't do it here
-        my $limit = nqp::istype($parts,Whatever) ?? Inf !! $parts;
-        return self.split($match,:$all) if $limit == Inf;
-
-        # nothing to work with
-        my int $chars = $match.chars;
-        if !self.chars {
-            return $chars ?? self.list !! ()
-        }
-
         # nothing to do
         elsif $limit < 2 {
-            return $limit <= 0 ?? () !! self.list
+            return $limit <= 0 ?? () !! self.list;
         }
 
+        # want them all
+        elsif $limit == Inf {
+            return self.split($match,:$v,:$k,:$kv,:$p,:$skip-empty);
+        }
+
+        # we have something to split on
         elsif $chars {
+
+            # let the multi-needle handler handle all nameds
+            return self.split(($match,),$parts,:$v,:$k,:$kv,:$p,:$skip-empty)
+              if $any || $skip-empty;
+
+            # make the sequence
             Seq.new(class :: does Iterator {
                 has str $!string;
                 has str $!chars;
                 has str $!match;
                 has int $!match-chars;
                 has int $!todo;
-                has int $!all;
                 has int $!pos;
-                has int $!do-match;
-                method BUILD(\string, \match, \todo, \all) {
+                method BUILD(\string, \match, \todo) {
                     $!string      = nqp::unbox_s(string);
                     $!chars       = nqp::chars($!string);
                     $!match       = nqp::unbox_s(match);
                     $!match-chars = nqp::chars($!match);
                     $!todo        = todo - 1;
-                    $!all         = ?all;
                     self
                 }
-                method new(\string,\match,\todo,\all) {
-                    nqp::create(self).BUILD(string,match,todo,all)
+                method new(\string,\match,\todo) {
+                    nqp::create(self).BUILD(string,match,todo)
                 }
                 method !last-part() is raw {
                     my str $string = nqp::substr($!string,$!pos);
@@ -893,56 +963,34 @@ my class Str does Stringy { # declared in BOOTSTRAP
                     nqp::p6box_s($string);
                 }
                 method pull-one() is raw {
-                    if $!do-match {
-                        $!do-match = 0;
-                        nqp::p6box_s($!match)
-                    }
-                    elsif $!todo {
+                    if $!todo {
                         $!todo = $!todo - 1;
                         my int $found = nqp::index($!string,$!match,$!pos);
-                        if $found < 0 {
-                            $!pos <= $!chars ?? self!last-part !! IterationEnd
-                        }
-                        else {
-                            $!do-match = $!all;
-                            self!next-part($found);
-                        }
-                    }
-                    elsif $!pos <= $!chars {
-                        self!last-part
+                        nqp::islt_i($found,0)
+                          ?? nqp::isle_i($!pos,$!chars)
+                            ?? self!last-part
+                            !! IterationEnd
+                          !! self!next-part($found);
                     }
                     else {
-                        IterationEnd
+                        nqp::isle_i($!pos,$!chars)
+                          ?? self!last-part
+                          !! IterationEnd
                     }
                 }
                 method push-all($target) {
-                    if $!all {
-                        while $!todo {
-                            my int $found = nqp::index($!string,$!match,$!pos);
-                            if $found < 0 {
-                                $!todo = 0;
-                            }
-                            else {
-                                $target.push(self!next-part($found));
-                                $target.push(nqp::p6box_s($!match));
-                                $!todo = $!todo - 1;
-                            }
-                        }
+                    while $!todo {
+                        $!todo = $!todo - 1;
+                        my int $found = nqp::index($!string,$!match,$!pos);
+                        nqp::islt_i($found,0)
+                          ?? ($!todo = 0)
+                          !! $target.push(self!next-part($found));
                     }
-                    else {
-                        while $!todo {
-                            $!todo = $!todo - 1;
-                            my int $found = nqp::index($!string,$!match,$!pos);
-                            $found < 0
-                              ?? ($!todo = 0)
-                              !! $target.push(self!next-part($found));
-                        }
-                    }
-                    $target.push(self!last-part) if $!pos <= $!chars;
+                    $target.push(self!last-part) if nqp::isle_i($!pos,$!chars);
                     IterationEnd
                 }
                 method sink-all() { IterationEnd }
-            }.new(self,$match,$limit,$all));
+            }.new(self,$match,$limit));
         }
 
         # just separate chars
@@ -950,29 +998,28 @@ my class Str does Stringy { # declared in BOOTSTRAP
             Seq.new(class :: does Iterator {
                 has str $!string;
                 has int $!todo;
-                has int $!all;
                 has int $!chars;
                 has int $!pos;
                 has int $!first;
                 has int $!last;
-                method BUILD(\string, \todo) {
+                method BUILD(\string, \todo, \skip-empty) {
                     $!string = nqp::unbox_s(string);
                     $!chars  = nqp::chars($!string);
                     $!todo   = todo;
-                    $!first  = 1;
+                    $!first  = !skip-empty;
 
                     if $!todo > $!chars + 2 {  # will return all chars
                         $!todo = $!chars + 1;
-                        $!last = 1;
+                        $!last = !skip-empty;
                     }
                     else {
                         $!todo = $!todo - 1;
-                        $!last = ($!todo == $!chars + 1);
+                        $!last = !skip-empty && ($!todo == $!chars + 1);
                     }
                     self
                 }
-                method new(\string,\todo) {
-                    nqp::create(self).BUILD(string,todo)
+                method new(\string,\todo,\skip-empty) {
+                    nqp::create(self).BUILD(string,todo,skip-empty)
                 }
                 method pull-one() is raw {
                     if $!first {             # do empty string first
@@ -988,7 +1035,7 @@ my class Str does Stringy { # declared in BOOTSTRAP
                         $!last = 0;
                         ""
                     }
-                    elsif $!pos < $!chars {  # do rest of string
+                    elsif nqp::islt_i($!pos,$!chars) {  # do rest of string
                         my str $rest = nqp::substr($!string,$!pos);
                         $!pos = $!chars;
                         nqp::p6box_s($rest)
@@ -998,7 +1045,7 @@ my class Str does Stringy { # declared in BOOTSTRAP
                     }
                 }
                 method push-all($target) {
-                    $target.push("");
+                    $target.push("") if $!first;
                     $!todo = $!todo - 1;
                     while $!todo {
                         $target.push(
@@ -1006,7 +1053,7 @@ my class Str does Stringy { # declared in BOOTSTRAP
                         $!todo = $!todo - 1;
                     }
                     $target.push( nqp::p6box_s(nqp::substr($!string,$!pos)))
-                      if $!pos < $!chars;
+                      if nqp::islt_i($!pos,$!chars);
                     $target.push("") if $!last;
                     IterationEnd
                 }
@@ -1014,12 +1061,19 @@ my class Str does Stringy { # declared in BOOTSTRAP
                     nqp::p6box_i($!todo + $!first + $!last)
                 }
                 method sink-all() { IterationEnd }
-            }.new(self,$limit));
+            }.new(self,$limit,$skip-empty));
         }
     }
-    multi method split(Str:D: @needles;; :$all, :$keep-indices, :$skip-empty) {
-        return self.split(rx/ @needles /,:$all)
-          if Rakudo::Internals.NOT_ALL_DEFINED_TYPE(@needles,Cool);
+    multi method split(Str:D: @needles, $parts = *;;
+       :$v is copy, :$k, :$kv, :$p, :$skip-empty, :$all) {
+        my int $any = self!split-sanity($v,$k,$kv,$p,$all);
+
+        # must all be Cool, otherwise we'll just use a regex
+        return self.split(rx/ @needles /,:$v,:$k,:$kv,:$p,:$skip-empty)
+          if Rakudo::Internals.NOT_ALL_TYPE(@needles,Cool);
+
+        my int $limit = $parts.Int
+          unless nqp::istype($parts,Whatever) || $parts == Inf;
 
         my str $str       = nqp::unbox_s(self);
         my $positions    := nqp::list;
@@ -1027,29 +1081,40 @@ my class Str does Stringy { # declared in BOOTSTRAP
         my $needle-chars := nqp::list;
         my $sorted       := nqp::list;
         my int $found     = -1;
+        my $needles-seen := nqp::hash;
+        my int $tried;
         my int $fired;
+
+        # search using all needles
         for @needles.kv -> $index, $needle {
-            my str $need  = nqp::unbox_s($needle.Str);
+            my str $need  = nqp::unbox_s($needle.DEFINITE ?? $needle.Str !! "");
             my int $chars = nqp::chars($need);
-
-            # this is probably an error
-            die "Cannot have an empty needle when using multiple needles"
-              if nqp::iseq_i($chars,0);
-
             nqp::push($needles,$need);
             nqp::push($needle-chars,$chars);
 
-            my int $pos;
-            my int $i;
-            my int $seen = nqp::elems($positions);
-            while nqp::isge_i($i = nqp::index($str, $need, $pos),0) {
-                nqp::push($positions,Pair.new($i,nqp::unbox_i($index)));
-                nqp::push($sorted,nqp::unbox_i($found = $found + 1));
-                $pos = $i + $chars;
+            # search for this needle if there is one, and not done before
+            if $chars && !nqp::existskey($needles-seen,$need) {
+                nqp::bindkey($needles-seen,$need,1);
+                my int $pos;
+                my int $i;
+                my int $seen = nqp::elems($positions);
+                my int $todo = $limit - 1; # no limit: -1
+                while $todo
+                  && nqp::isge_i($i = nqp::index($str, $need, $pos),0) {
+                    nqp::push($positions,Pair.new($i,nqp::unbox_i($index)));
+                    nqp::push($sorted,nqp::unbox_i($found = $found + 1));
+                    $pos  = $i + $chars;
+                    $todo = $todo - 1;
+                }
+                $tried = $tried + 1;
+                $fired = $fired + nqp::isge_i(nqp::elems($positions),$seen);
             }
-            $fired = $fired + 1 if nqp::elems($positions) > $seen;
         }
 
+        # no needle tried, assume we want chars
+        return self.split("",$parts) if nqp::not_i($tried);
+
+        # sort by position if more than one needle fired
         nqp::p6sort($sorted, -> int $a, int $b {
             # $a <=> $b || $b.chars <=> $a.chars, aka pos asc, length desc
             nqp::getattr(nqp::atpos($positions,$a),Pair,'$!key')
@@ -1058,37 +1123,50 @@ my class Str does Stringy { # declared in BOOTSTRAP
                      nqp::getattr(nqp::atpos($positions,$b),Pair,'$!value'))
                        <=> nqp::atpos($needle-chars,
                          nqp::getattr(nqp::atpos($positions,$a),Pair,'$!value'))
-        }) if $fired > 1;
+        }) if nqp::isgt_i($fired,1);
 
+        # remove elements we don't want
+        if $limit {
+            my int $todo = $limit - 1;
+            my $limited := nqp::list;
+            my $pair;
+            my int $from;
+            my int $pos;
+            while $todo && nqp::elems($sorted) {
+                my int $index = nqp::shift($sorted);
+                $pair := nqp::atpos($positions,$index);
+                $from  = nqp::getattr($pair,Pair,'$!key');
+                if nqp::isge_i($from,$pos) { # not hidden by other needle
+                    nqp::push($limited,$index);
+                    $pos = $from + nqp::atpos(
+                      $needle-chars,nqp::getattr($pair,Pair,'$!value'));
+                    $todo = $todo - 1;
+                }
+            }
+            $sorted := $limited;
+        }
+
+        # create the final result
         my int $skip = ?$skip-empty;
         my $pair;
         my int $from;
         my int $pos;
         my $result := nqp::list;
-        if $keep-indices {
+        if $any {
             while nqp::elems($sorted) {
                 $pair := nqp::atpos($positions,nqp::shift($sorted));
                 $from  = nqp::getattr($pair,Pair,'$!key');
                 if nqp::isge_i($from,$pos) { # not hidden by other needle
                     my int $needle-index = nqp::getattr($pair,Pair,'$!value');
-                    unless $skip && nqp::iseq_i($from,$pos) {
-                        nqp::push($result,nqp::substr($str,$pos,$from - $pos));
-                        nqp::push($result,$needle-index);
-                    }
-                    $pos = $from + nqp::atpos($needle-chars,$needle-index);
-                }
-            }
-        }
-        elsif $all {
-            while nqp::elems($sorted) {
-                $pair := nqp::atpos($positions,nqp::shift($sorted));
-                $from  = nqp::getattr($pair,Pair,'$!key');
-                if nqp::isge_i($from,$pos) { # not hidden by other needle
-                    my int $needle-index = nqp::getattr($pair,Pair,'$!value');
-                    unless $skip && nqp::iseq_i($from,$pos) {
-                        nqp::push($result,nqp::substr($str,$pos,$from - $pos));
-                        nqp::push($result,nqp::atpos($needles,$needle-index));
-                    }
+                    nqp::push($result,nqp::substr($str,$pos,$from - $pos))
+                      unless $skip && nqp::iseq_i($from,$pos);
+                    nqp::push($result,$needle-index)
+                      if $k || $kv;
+                    nqp::push($result,nqp::atpos($needles,$needle-index))
+                      if $v || $kv;
+                    nqp::push($result,Pair.new(
+                      $needle-index,nqp::atpos($needles,$needle-index)))
+                      if $p;
                     $pos = $from + nqp::atpos($needle-chars,$needle-index);
                 }
             }
@@ -1106,14 +1184,9 @@ my class Str does Stringy { # declared in BOOTSTRAP
             }
         }
         nqp::push($result,nqp::substr($str,$pos))
-          unless $skip && $pos == nqp::chars($str);
+          unless $skip && nqp::iseq_i($pos,nqp::chars($str));
 
         $result
-    }
-    multi method split(Str:D: @needles,$parts;; :$all, :$keep-indices) {
-        nqp::istype($parts,Whatever) || $parts === Inf
-          ?? self.split(@needles,:$all,:$keep-indices)
-          !! self.split(/ @needles /,$parts,:$all,:$keep-indices)
     }
 
     method samecase(Str:D: Str $pattern) {
@@ -1279,10 +1352,27 @@ my class Str does Stringy { # declared in BOOTSTRAP
     }
 
     my $enc_type := nqp::hash('utf8',utf8,'utf16',utf16,'utf32',utf32);
+
+#?if moar
+    proto method encode(|) {*}
+    multi method encode(Str:D $encoding = 'utf8', Bool:D :$replacement) {
+        self.encode($encoding, :replacement($replacement
+            ?? ($encoding ~~ m:i/^utf/ ?? "\x[FFFD]" !! "?" )
+            !! Str
+        ));
+    }
+    multi method encode(Str:D $encoding = 'utf8', Str :$replacement) {
+#?endif
+#?if !moar
     method encode(Str:D $encoding = 'utf8') {
+#?endif
         my str $enc = Rakudo::Internals.NORMALIZE_ENCODING($encoding);
         my $type   :=
           nqp::existskey($enc_type,$enc) ?? nqp::atkey($enc_type,$enc) !! blob8;
+#?if moar
+        return nqp::encoderep(nqp::unbox_s(self), $enc, nqp::unbox_s($replacement), nqp::decont($type.new))
+            if $replacement.defined;
+#?endif
         nqp::encode(nqp::unbox_s(self), $enc, nqp::decont($type.new))
     }
 

@@ -86,8 +86,9 @@ my stub IntPosRef metaclass Perl6::Metamodel::NativeRefHOW { ... };
 my stub NumPosRef metaclass Perl6::Metamodel::NativeRefHOW { ... };
 my stub StrPosRef metaclass Perl6::Metamodel::NativeRefHOW { ... };
 
-#?if moar
-# On MoarVM, implement the signature binder.
+# Implement the signature binder.
+# The JVM backend really only uses trial_bind,
+# so we exclude everything else.
 my class Binder {
     # Flags that can be set on a signature element.
     my int $SIG_ELEM_BIND_CAPTURE        := 1;
@@ -128,6 +129,7 @@ my class Binder {
     my $Positional;
     my $PositionalBindFailover;
 
+#?if moar
     sub arity_fail($params, int $num_params, int $num_pos_args, int $too_many) {
         my str $error_prefix := $too_many ?? "Too many" !! "Too few";
         my int $count;
@@ -948,6 +950,11 @@ my class Binder {
         $sig
     }
 
+    method get_return_type($code) {
+        nqp::getattr(nqp::getattr($code, Code, '$!signature'), Signature, '$!returns')
+    }
+#?endif
+
     my int $TRIAL_BIND_NOT_SURE :=  0;   # Plausible, but need to check at runtime.
     my int $TRIAL_BIND_OK       :=  1;   # Bind will always work out.
     my int $TRIAL_BIND_NO_WAY   := -1;   # Bind could never work out.
@@ -978,7 +985,7 @@ my class Binder {
                     $SIG_ELEM_MULTI_INVOCANT +| $SIG_ELEM_IS_RAW +|
                     $SIG_ELEM_IS_COPY +| $SIG_ELEM_ARRAY_SIGIL +|
                     $SIG_ELEM_HASH_SIGIL +| $SIG_ELEM_NATIVE_VALUE +|
-                    $SIG_ELEM_IS_OPTIONAL +| $SIG_ELEM_IS_RW) {
+                    $SIG_ELEM_IS_OPTIONAL) || $flags +& $SIG_ELEM_IS_RW {
                 return $TRIAL_BIND_NOT_SURE;
             }
             unless nqp::isnull(nqp::getattr($param, Parameter, '$!named_names')) {
@@ -1070,14 +1077,9 @@ my class Binder {
         # Otherwise, if we get there, all is well.
         return $TRIAL_BIND_OK;
     }
-
-    method get_return_type($code) {
-        nqp::getattr(nqp::getattr($code, Code, '$!signature'), Signature, '$!returns')
-    }
 }
 BEGIN { nqp::p6setbinder(Binder); } # We need it in for the next BEGIN block
 nqp::p6setbinder(Binder);           # The load-time case.
-#?endif
 
 # We stick all the declarative bits inside of a BEGIN, so they get
 # serialized.
@@ -2456,6 +2458,10 @@ BEGIN {
                     my $type_obj     := nqp::atpos(nqp::atkey($cur_candidate, 'types'), $i);
                     my $type_flags   := nqp::atpos_i(nqp::atkey($cur_candidate, 'type_flags'), $i);
                     my int $got_prim := nqp::atpos(@flags, $i);
+                    if nqp::atpos_i(nqp::atkey($cur_candidate, 'rwness'), $i) {
+                        $type_mismatch := 1;
+                        last;
+                    }
                     if $type_flags +& $TYPE_NATIVE_MASK {
                         # Looking for a natively typed value. Did we get one?
                         if $got_prim == $BIND_VAL_OBJ {

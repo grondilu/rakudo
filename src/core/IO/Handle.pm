@@ -71,7 +71,9 @@ my class IO::Handle does IO {
             }
             $!chomp = $chomp;
             $!nl-out = $nl-out;
+#?if !jvm
             Rakudo::Internals.SET_LINE_ENDING_ON_HANDLE($!PIO, $!nl-in = $nl-in);
+#?endif
             nqp::setencoding($!PIO, Rakudo::Internals.NORMALIZE_ENCODING($enc))
               unless $bin;
             return self;
@@ -143,15 +145,23 @@ my class IO::Handle does IO {
     }
 
     method get(IO::Handle:D:) {
-        return Str if nqp::eoffh($!PIO);
-
-        my Str $x = nqp::p6box_s($!chomp ?? nqp::readlinechompfh($!PIO) !! nqp::readlinefh($!PIO));
-        # XXX don't fail() as long as it's fatal
-        # fail('end of file') if self.eof && $x eq '';
-        return Str if nqp::eoffh($!PIO) && $x eq '';
-
-        $!ins = $!ins + 1;
-        $x;
+        if nqp::eoffh($!PIO) {
+            Str
+        }
+        else {
+            my str $x = $!chomp
+              ?? nqp::readlinechompfh($!PIO)
+              !! nqp::readlinefh($!PIO);
+            # XXX don't fail() as long as it's fatal
+            # fail('end of file') if self.eof && $x eq '';
+            if nqp::iseq_i(nqp::chars($x),0) && nqp::eoffh($!PIO) {
+                Str
+            }
+            else {
+                $!ins = nqp::add_i($!ins,1);
+                $x
+            }
+        }
     }
 
     method getc(IO::Handle:D:) {
