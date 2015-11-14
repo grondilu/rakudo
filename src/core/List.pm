@@ -281,8 +281,8 @@ my class List does Iterable does Positional { # declared in BOOTSTRAP
     multi method Str(List:D:)     { self.join(' ') }
 
     # Pretend we're a Match assuming we're a list of Matches
-    method to()         { self.elems ?? self[self.end].to !! Nil }
-    method from()       { self.elems ?? self[0].from !! Nil }
+    method to()      { self.elems ?? self[self.end].to !! Nil }
+    method from()    { self.elems ?? self[0].from !! Nil }
 
     method fmt($format = '%s', $separator = ' ') {
         self.map({ .fmt($format) }).join($separator);
@@ -568,7 +568,7 @@ my class List does Iterable does Positional { # declared in BOOTSTRAP
 
         self
     }
-    multi method STORE(List:D: \item) {
+    multi method STORE(List:D: Mu \item) {
         self.STORE((item,));
     }
 
@@ -732,69 +732,91 @@ my class List does Iterable does Positional { # declared in BOOTSTRAP
 
     proto method roll(|) is nodal { * }
     multi method roll() {
-        fail X::Cannot::Lazy.new(:action('.roll from'))
-            if self.is-lazy;
+        fail X::Cannot::Lazy.new(:action('.roll from')) if self.is-lazy;
         my $elems = self.elems;
-        $elems ?? nqp::atpos($!reified, $elems.rand.floor) !! Nil;
+        $elems
+          ?? nqp::atpos($!reified, $elems.rand.floor)
+          !! Nil;
     }
     multi method roll(Whatever) {
         fail X::Cannot::Lazy.new(:action('.roll from')) if self.is-lazy;
         my $elems = self.elems;
-        return () unless $elems;
-
-        # directly use Seq.from-loop so that the result is known infinite
-        Seq.from-loop({nqp::atpos($!reified, $elems.rand.floor)});
+        $elems
+          ?? Seq.from-loop({nqp::atpos($!reified, $elems.rand.floor)})
+          !! ()
     }
     multi method roll(\number) {
-        return self.roll(*) if number == Inf;
-
-        fail X::Cannot::Lazy.new(:action('.roll from')) if self.is-lazy;
-        my $elems = self.elems;
-        return () unless $elems;
-
-        my int $n = number.Int;
-
-        gather while $n > 0 {
-            take nqp::atpos($!reified,$elems.rand.floor);
-            $n = $n - 1;
+        if number == Inf {
+            self.roll(*)
+        }
+        else {
+            fail X::Cannot::Lazy.new(:action('.roll from')) if self.is-lazy;
+            if self.elems {  # this allocates/reifies
+                Seq.new(class :: does Iterator {
+                    has $!list;
+                    has Int $!elems;
+                    has int $!todo;
+                    method BUILD(\list,\todo) {
+                        $!list := nqp::getattr(list,List,'$!reified');
+                        $!elems = nqp::elems($!list);
+                        $!todo  = todo;
+                        self
+                    }
+                    method new(\list,\todo) {
+                        nqp::create(self).BUILD(list,todo)
+                    }
+                    method pull-one() is raw {
+                        if $!todo {
+                            $!todo = $!todo - 1;
+                            nqp::atpos($!list,$!elems.rand.floor)
+                        }
+                        else {
+                            IterationEnd
+                        }
+                    }
+                }.new(self,number.Int))
+            }
+            else {
+                ()
+            }
         }
     }
 
     method reverse() is nodal {
-        self!ensure-allocated;
         fail X::Cannot::Lazy.new(:action<reverse>) if self.is-lazy;
-        my $reversed := IterationBuffer.new;
-        my $reified  := $!reified;
-        my int $i    = 0;
-        my int $n    = nqp::elems($reified);
-        while $i < $n {
-            nqp::bindpos($reversed, $n - ($i + 1), nqp::atpos($reified, $i));
-            $i = $i + 1;
+        my $rlist   := nqp::create(self);
+        my $reified := $!reified;
+        if $reified {
+            my int $i     = -1;
+            my int $elems = nqp::elems($reified);
+            my int $last  = $elems - 1;
+            my $reversed := nqp::list;
+            nqp::setelems($reversed,$elems);
+            nqp::bindpos($reversed, $last - $i, nqp::atpos($reified, $i))
+                while ($i = $i + 1) < $elems;
+            nqp::bindattr($rlist, List, '$!reified', $reversed);
         }
-        my $rlist := nqp::create(self.WHAT);
-        nqp::bindattr($rlist, List, '$!reified', $reversed);
-        $rlist;
+        $rlist
     }
 
-    method rotate(Int(Cool) $n is copy = 1) is nodal {
-        self!ensure-allocated;
+    method rotate(Int(Cool) $rotate = 1) is nodal {
         fail X::Cannot::Lazy.new(:action<rotate>) if self.is-lazy;
-        my $elems = self.elems;
-        return () unless $elems;
-
-        $n %= $elems;
-        return self if $n == 0;
-
-        my $rot := nqp::clone($!reified);
-        if $n > 0 {
-            nqp::push($rot, nqp::shift($rot)) while $n--;
+        my int $elems = self.elems;  # this allocates/reifies
+        my $rotated := nqp::create(self);
+        if $elems {
+            my int $n = $rotate % $elems;
+            my $list := nqp::clone($!reified);
+            if $n > 0 {
+                $n = $n + 1;
+                nqp::push($list, nqp::shift($list)) while $n = $n - 1;
+            }
+            elsif $n < 0 {
+                $n = $n - 1;
+                nqp::unshift($list, nqp::pop($list)) while $n = $n + 1;
+            }
+            nqp::bindattr($rotated,List,'$!reified',$list);
         }
-        elsif $n < 0 {
-            nqp::unshift($rot, nqp::pop($rot)) while $n++;
-        }
-        my $rlist := nqp::create(self.WHAT);
-        nqp::bindattr($rlist, List, '$!reified', $rot);
-        $rlist;
+        $rotated;
     }
 
     method rotor(List:D: *@cycle, :$partial) is nodal {
@@ -1045,7 +1067,7 @@ multi sub infix:<X>(+lol) {
             my @i = @l.map: *.iterator;
             while $i >= 0 {
                 my \e = @i[$i].pull-one();
-                if e !=:= IterationEnd {
+                if !(e =:= IterationEnd) {
                     nqp::bindpos($v, $i, e);
                     if $i >= $n { take nqp::clone($v) }
                     else {
@@ -1108,7 +1130,7 @@ multi sub infix:<X>(+lol) {
         gather {
             while $i == 0 {
                 my \e = source.pull-one;
-                if e !=:= IterationEnd {
+                if !(e =:= IterationEnd) {
                     nqp::bindpos($v, $i, e);
 
                     if $i >= $n { take nqp::clone($v) }
@@ -1152,11 +1174,7 @@ multi sub infix:<Z>(+lol) {
     eager my @l = (^$arity).map: -> $i {
         my \elem = lol[$i];
         $laze = False unless elem.is-lazy;
-        Rakudo::Internals::WhateverIterator.new(
-            nqp::istype(elem, Iterable)
-                ?? elem.iterator
-                !! elem.list.iterator
-        )
+        Rakudo::Internals::WhateverIterator.new(elem.iterator)
     };
 
     gather {
@@ -1176,7 +1194,7 @@ multi sub infix:<Z>(+lol) {
 my &zip := &infix:<Z>;
 
 sub roundrobin(**@lol) {
-    my @iters = @lol.map: { nqp::istype($_, Iterable) ?? .iterator !! .list.iterator };
+    my @iters = @lol.map: *.iterator;
     my $laze = so any(@lol).is-lazy;
     gather {
         while @iters {
@@ -1184,7 +1202,7 @@ sub roundrobin(**@lol) {
             my @values;
             for @iters -> $i {
                 my \v = $i.pull-one;
-                if v !=:= IterationEnd {
+                unless v =:= IterationEnd {
                     @values.push: v;
                     @new-iters.push: $i;
                 }

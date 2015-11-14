@@ -72,9 +72,8 @@ my class Exception {
         nqp::p6bool(nqp::istrue(nqp::atkey($!ex, 'resume')));
     }
 
-    method resume(Exception:D:) {
+    method resume(Exception:D: --> True) {
         nqp::resume($!ex);
-        True
     }
 
     method die(Exception:D:) { self.throw }
@@ -878,6 +877,13 @@ my class X::Dynamic::Postdeclaration does X::Comp {
     }
 }
 
+my class X::Dynamic::Package does X::Comp {
+    has $.symbol;
+    method message() {
+        "Dynamic variables cannot have package-like names, like $!symbol"
+    }
+}
+
 my class X::Import::Redeclaration does X::Comp {
     has @.symbols;
     has $.source-package-name;
@@ -1236,7 +1242,11 @@ my class X::Syntax::Missing does X::Syntax {
 }
 my class X::Syntax::BlockGobbled does X::Syntax {
     has $.what;
-    method message() { "{ $.what ?? 'Function ' ~ $.what !! 'Expression' } needs parens to avoid gobbling block" };
+    method message() {
+        $.what ~~ /^'is '/
+            ?? "Trait '$.what' needs whitespace before block"
+            !! "{ $.what ?? "Function '$.what'" !! 'Expression' } needs parens to avoid gobbling block";
+    };
 }
 
 my class X::Syntax::ConditionalOperator::PrecedenceTooLoose does X::Syntax {

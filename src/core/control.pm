@@ -136,9 +136,13 @@ my &nextsame := -> {
     Nil
 };
 
-my &lastcall := -> {
+my &lastcall := -> --> True {
     nqp::p6finddispatcher('lastcall').last();
-    True
+};
+
+my &nextcallee := -> {
+    my Mu $dispatcher := nqp::p6finddispatcher('nextsame');
+    $dispatcher.exhausted ?? Nil !! $dispatcher.shift_callee()
 };
 
 sub samewith(|c) {

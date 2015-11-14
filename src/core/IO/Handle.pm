@@ -133,11 +133,10 @@ my class IO::Handle does IO {
         );
     }
 
-    method close(IO::Handle:D:) {
+    method close(IO::Handle:D: --> True) {
         # TODO: catch errors
         nqp::closefh($!PIO) if nqp::defined($!PIO);
         $!PIO := Mu;
-        True;
     }
 
     method eof(IO::Handle:D:) {
@@ -145,29 +144,32 @@ my class IO::Handle does IO {
     }
 
     method get(IO::Handle:D:) {
-        if nqp::eoffh($!PIO) {
-            Str
-        }
-        else {
-            my str $x = $!chomp
-              ?? nqp::readlinechompfh($!PIO)
-              !! nqp::readlinefh($!PIO);
-            # XXX don't fail() as long as it's fatal
-            # fail('end of file') if self.eof && $x eq '';
-            if nqp::iseq_i(nqp::chars($x),0) && nqp::eoffh($!PIO) {
-                Str
+        if $!chomp {
+            my str $str = nqp::readlinechompfh($!PIO);
+            # loses last empty line because EOF is set too early, RT #126598
+            if nqp::chars($str) || !nqp::eoffh($!PIO) {
+                $!ins = nqp::add_i($!ins,1);
+                $str
             }
             else {
+                Nil
+            }
+        }
+        else {
+            my str $str = nqp::readlinefh($!PIO);
+            if nqp::chars($str) {   # no need to check EOF
                 $!ins = nqp::add_i($!ins,1);
-                $x
+                $str
+            }
+            else {
+                Nil
             }
         }
     }
 
     method getc(IO::Handle:D:) {
-        my $c = nqp::p6box_s(nqp::getcfh($!PIO));
-        fail if $c eq '';
-        $c;
+        my str $c = nqp::getcfh($!PIO);
+        nqp::chars($c) ?? $c !! Nil
     }
 
     proto method comb(|) { * }
@@ -840,18 +842,16 @@ my class IO::Handle does IO {
     #   0 -- seek from beginning of file
     #   1 -- seek relative to current position
     #   2 -- seek from the end of the file
-    method seek(IO::Handle:D: Int:D $offset, Int:D $whence) {
+    method seek(IO::Handle:D: Int:D $offset, Int:D $whence --> True) {
         nqp::seekfh($!PIO, $offset, $whence);
-        True;
     }
 
     method tell(IO::Handle:D:) returns Int {
         nqp::p6box_i(nqp::tellfh($!PIO));
     }
 
-    method write(IO::Handle:D: Blob:D $buf) {
+    method write(IO::Handle:D: Blob:D $buf --> True) {
         nqp::writefh($!PIO, nqp::decont($buf));
-        True;
     }
 
     method opened(IO::Handle:D:) {
@@ -864,17 +864,28 @@ my class IO::Handle does IO {
 
 
     proto method print(|) { * }
-    multi method print(IO::Handle:D: str:D \x) {
+    multi method print(IO::Handle:D: str:D \x --> True) {
         nqp::printfh($!PIO,x);
-        Bool::True
     }
-    multi method print(IO::Handle:D: Str:D \x) {
+    multi method print(IO::Handle:D: Str:D \x --> True) {
         nqp::printfh($!PIO, nqp::unbox_s(x));
-        Bool::True
     }
-    multi method print(IO::Handle:D: *@list is raw) { # is raw gives List, which is cheaper
+    multi method print(IO::Handle:D: *@list is raw --> True) { # is raw gives List, which is cheaper
         nqp::printfh($!PIO, nqp::unbox_s(.Str)) for @list;
-        Bool::True
+    }
+
+    proto method put(|) { * }
+    multi method put(IO::Handle:D: str:D \x --> True) {
+        nqp::printfh($!PIO,x);
+        nqp::printfh($!PIO, nqp::unbox_s($!nl-out));
+    }
+    multi method put(IO::Handle:D: Str:D \x --> True) {
+        nqp::printfh($!PIO, nqp::unbox_s(x));
+        nqp::printfh($!PIO, nqp::unbox_s($!nl-out));
+    }
+    multi method put(IO::Handle:D: *@list is raw --> True) { # is raw gives List, which is cheaper
+        nqp::printfh($!PIO, nqp::unbox_s(.Str)) for @list;
+        nqp::printfh($!PIO, nqp::unbox_s($!nl-out));
     }
 
     multi method say(IO::Handle:D: |) {
@@ -884,9 +895,8 @@ my class IO::Handle does IO {
         self.print-nl;
     }
 
-    method print-nl(IO::Handle:D:) {
+    method print-nl(IO::Handle:D: --> True) {
         nqp::printfh($!PIO, nqp::unbox_s($!nl-out));
-        Bool::True;
     }
 
     proto method slurp-rest(|) { * }
@@ -921,11 +931,10 @@ my class IO::Handle does IO {
     }
 
 
-    method flush(IO::Handle:D:) {
+    method flush(IO::Handle:D: --> True) {
         fail("File handle not open, so cannot flush")
             unless nqp::defined($!PIO);
         nqp::flushfh($!PIO);
-        True;
     }
 
     method encoding(IO::Handle:D: $enc?) {

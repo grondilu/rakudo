@@ -647,9 +647,8 @@ my class Array { # declared in BOOTSTRAP
 
         my $todo = nqp::getattr(self, List, '$!todo');
         my $lazy;
-        if $todo.DEFINITE {
-            $lazy = $todo.reify-until-lazy() !=:= IterationEnd;
-        }
+        $lazy = !($todo.reify-until-lazy() =:= IterationEnd)
+          if $todo.DEFINITE;
 
         my int $o = nqp::istype($offset,Callable)
           ?? $offset(self.elems)
@@ -675,7 +674,7 @@ my class Array { # declared in BOOTSTRAP
 
         # need to enforce type checking
         my $expected := self.of;
-        if self.of !=:= Mu {
+        unless self.of =:= Mu {
             my int $i = 0;
             my int $n = nqp::elems(splice-buffer);
             while $i < $n {
@@ -708,7 +707,7 @@ my class Array { # declared in BOOTSTRAP
     # introspection
     method name() {
         my $d := $!descriptor;
-        nqp::isnull($d) ?? Str !! $d.name()
+        nqp::isnull($d) ?? Nil !! $d.name()
     }
     method of() {
         my $d := $!descriptor;
@@ -720,7 +719,7 @@ my class Array { # declared in BOOTSTRAP
     }
     method dynamic() {
         my $d := $!descriptor;
-        nqp::isnull($d) ?? Bool !! so $d.dynamic;
+        nqp::isnull($d) ?? Nil !! so $d.dynamic;
     }
     multi method perl(Array:D \SELF:) {
         if not %*perlseen<TOP> { my %*perlseen = :TOP ; return SELF.perl }

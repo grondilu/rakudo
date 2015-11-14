@@ -1010,7 +1010,7 @@ my class Binder {
             }
             else {
                 # Yes, need to consider type
-                my int $got_prim := $sigflags[$cur_pos_arg];
+                my int $got_prim := $sigflags[$cur_pos_arg] +& 0xF;
                 if $flags +& $SIG_ELEM_NATIVE_VALUE {
                     if $got_prim == 0 {
                         # We got an object; if we aren't sure we can unbox, we can't
@@ -1848,6 +1848,9 @@ BEGIN {
                     'constraints',  [],
                     'rwness',       nqp::list_i()
                 );
+                if nqp::istype($candidate, Submethod) {
+                    %info<exact_invocant> := 1;
+                }
                 my int $significant_param := 0;
                 my int $min_arity         := 0;
                 my int $max_arity         := 0;
@@ -2079,6 +2082,7 @@ BEGIN {
             my $cur_candidate;
             my int $type_check_count;
             my int $type_mismatch;
+            my int $rwness_mismatch;
             my int $i;
             my int $pure_type_result := 1;
             my $many_res := $many ?? [] !! Mu;
@@ -2098,13 +2102,19 @@ BEGIN {
                             ?? $num_args
                             !! nqp::atkey($cur_candidate, 'num_types');
                         $type_mismatch := 0;
+                        $rwness_mismatch := 0;
 
                         $i := 0;
-                        while $i < $type_check_count && !$type_mismatch {
+                        while $i < $type_check_count && !$type_mismatch && !$rwness_mismatch {
                             my $type_obj       := nqp::atpos(nqp::atkey($cur_candidate, 'types'), $i);
                             my int $type_flags := nqp::atpos_i(nqp::atkey($cur_candidate, 'type_flags'), $i);
                             my int $got_prim   := nqp::captureposprimspec($capture, $i);
-                            if $type_flags +& $TYPE_NATIVE_MASK {
+                            my $rwness         := nqp::atpos_i(nqp::atkey($cur_candidate, 'rwness'), $i);
+                            if $rwness && !nqp::isrwcont(nqp::captureposarg($capture, $i)) {
+                                # If we need a container but don't have one it clearly can't work.
+                                $rwness_mismatch := 1;
+                            }
+                            elsif $type_flags +& $TYPE_NATIVE_MASK {
                                 # Looking for a natively typed value. Did we get one?
                                 if $got_prim == $BIND_VAL_OBJ {
                                     # Object, but could be a native container. If not, mismatch.
@@ -2138,7 +2148,14 @@ BEGIN {
                                                                             Str;
                                     $primish := 1;
                                 }
-                                unless nqp::eqaddr($type_obj, Mu) || nqp::istype($param, $type_obj) {
+                                if nqp::eqaddr($type_obj, Mu) || nqp::istype($param, $type_obj) {
+                                    if $i == 0 && nqp::existskey($cur_candidate, 'exact_invocant') {
+                                        unless $param.WHAT =:= $type_obj {
+                                            $type_mismatch := 1;
+                                        }
+                                    }
+                                }
+                                else {
                                     if $type_obj =:= $Positional {
                                         my $PositionalBindFailover := nqp::gethllsym('perl6', 'MD_PBF');
                                         unless nqp::istype($param, $PositionalBindFailover) {
@@ -2160,7 +2177,7 @@ BEGIN {
                             $i++;
                         }
                         
-                        unless $type_mismatch {
+                        unless $type_mismatch || $rwness_mismatch {
                             # It's an admissable candidate; add to list.
                             nqp::push(@possibles, $cur_candidate);
                         }
@@ -2388,6 +2405,7 @@ BEGIN {
             my int $BIND_VAL_INT      := 1;
             my int $BIND_VAL_NUM      := 2;
             my int $BIND_VAL_STR      := 3;
+            my int $ARG_IS_LITERAL    := 32;
             
             # Count arguments.
             my int $num_args := nqp::elems(@args);
@@ -2457,11 +2475,8 @@ BEGIN {
                 while $i < $type_check_count {
                     my $type_obj     := nqp::atpos(nqp::atkey($cur_candidate, 'types'), $i);
                     my $type_flags   := nqp::atpos_i(nqp::atkey($cur_candidate, 'type_flags'), $i);
-                    my int $got_prim := nqp::atpos(@flags, $i);
-                    if nqp::atpos_i(nqp::atkey($cur_candidate, 'rwness'), $i) {
-                        $type_mismatch := 1;
-                        last;
-                    }
+                    my int $got_prim := nqp::atpos(@flags, $i) +& 0xF;
+                    my int $literal  := nqp::atpos(@flags, $i) +& $ARG_IS_LITERAL;
                     if $type_flags +& $TYPE_NATIVE_MASK {
                         # Looking for a natively typed value. Did we get one?
                         if $got_prim == $BIND_VAL_OBJ {
@@ -2471,7 +2486,8 @@ BEGIN {
                         }
                         if (($type_flags +& $TYPE_NATIVE_INT) && $got_prim != $BIND_VAL_INT)
                         || (($type_flags +& $TYPE_NATIVE_NUM) && $got_prim != $BIND_VAL_NUM)
-                        || (($type_flags +& $TYPE_NATIVE_STR) && $got_prim != $BIND_VAL_STR) {
+                        || (($type_flags +& $TYPE_NATIVE_STR) && $got_prim != $BIND_VAL_STR)
+                        || ($literal && nqp::atpos_i(nqp::atkey($cur_candidate, 'rwness'), $i)) {
                             # Mismatch.
                             $type_mismatch := 1;
                             $type_match_possible := 0;

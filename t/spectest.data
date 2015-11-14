@@ -204,7 +204,6 @@ S03-operators/context-forcers.t
 S03-operators/context.t
 S03-operators/equality.t
 S03-operators/eqv.t
-S03-operators/fiddly.t
 S03-operators/flip-flop.t
 S03-operators/gcd.t
 S03-operators/div.t
@@ -439,6 +438,7 @@ S06-macros/errors.t
 S06-macros/quasi-blocks.t
 S06-macros/unquoting.t
 S06-macros/opaque-ast.t
+S06-multi/by-trait.t
 S06-multi/lexical-multis.t
 S06-multi/positional-vs-named.t
 S06-multi/proto.t
@@ -714,6 +714,7 @@ S15-string-types/Uni.t          # moar
 S15-string-types/Str.t
 S15-unicode-information/uniname.t
 S15-unicode-information/unimatch-general.t	# moar
+S15-unicode-information/uniprop.t           # moar
 S15-unicode-information/unival.t	        # moar
 S16-filehandles/argfiles.t
 S16-filehandles/chmod.t
@@ -1012,6 +1013,7 @@ S32-str/tclc.t
 S32-str/trim.t
 S32-str/uc.t
 S32-str/unpack.t
+S32-str/utf8-c8.t       # moar
 S32-str/words.t
 S32-temporal/calendar.t
 S32-temporal/Date.t

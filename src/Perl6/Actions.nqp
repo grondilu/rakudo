@@ -1335,7 +1335,7 @@ Compilation unit '$file' contained the following violations:
         my $loop := QAST::Op.new( $cond, :op('while'), :node($/) );
         $loop.push($block);
         if $<e3> {
-            $loop.push($<e3>.ast);
+            $loop.push(sink($<e3>.ast));
         }
         $loop := tweak_loop($loop);
         if $<e1> {
@@ -2076,6 +2076,9 @@ Compilation unit '$file' contained the following violations:
         my $name := $past.name();
 
         if $twigil eq '*' {
+            if +@name > 1 {
+                $*W.throw($/, 'X::Dynamic::Package', symbol => ~$/);
+            }
             $past := QAST::Op.new(
                 :op('call'), :name('&DYNAMIC'),
                 $*W.add_string_constant($name));
@@ -8243,7 +8246,9 @@ Compilation unit '$file' contained the following violations:
         QAST::Op.new(
             :op('p6typecheckrv'),
             $wrappee,
-            QAST::WVal.new( :value($code_obj) ));
+            QAST::WVal.new( :value($code_obj) ),
+            QAST::WVal.new( :value($*W.find_symbol(['Nil'])) )
+        );
     }
 
     sub wrap_return_handler($past) {
@@ -8456,11 +8461,33 @@ class Perl6::QActions is HLL::Actions does STDActions {
     method backslash:sym<c>($/) { make $<charspec>.ast }
     method backslash:sym<e>($/) { make "\c[27]" }
     method backslash:sym<f>($/) { make "\c[12]" }
-    method backslash:sym<n>($/) { make nqp::unbox_s($*W.find_symbol(['$?NL'])); }
+    method backslash:sym<n>($/) {
+        my str $nl := nqp::unbox_s($*W.find_symbol(['$?NL']));
+        if nqp::can($/.CURSOR, 'parsing_heredoc') {
+            # In heredocs, we spit out a QAST::SVal here to prevent newlines
+            # being taken literally and affecting the dedent.
+            make QAST::SVal.new( :value($nl) );
+        }
+        else {
+            make $nl;
+        }
+    }
     method backslash:sym<o>($/) { make self.ints_to_string( $<octint> ?? $<octint> !! $<octints><octint> ) }
-    method backslash:sym<r>($/) { make "\r" }
-    method backslash:sym<rn>($/) { make "\r\n" }
-    method backslash:sym<t>($/) { make "\t" }
+    method backslash:sym<r>($/) {
+        make nqp::can($/.CURSOR, 'parsing_heredoc')
+            ?? QAST::SVal.new( :value("\r") )
+            !! "\r";
+    }
+    method backslash:sym<rn>($/) {
+        make nqp::can($/.CURSOR, 'parsing_heredoc')
+            ?? QAST::SVal.new( :value("\r\n") )
+            !! "\r\n";
+    }
+    method backslash:sym<t>($/) {
+        make nqp::can($/.CURSOR, 'parsing_heredoc')
+            ?? QAST::SVal.new( :value("\t") )
+            !! "\t";
+    }
     method backslash:sym<x>($/) { make self.ints_to_string( $<hexint> ?? $<hexint> !! $<hexints><hexint> ) }
     method backslash:sym<0>($/) { make "\c[0]" }
 
